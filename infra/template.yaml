@@ -1,0 +1,122 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: GenAI Incident Root Cause Analyzer - minimal infra (data/site buckets + HTTP API + stub Lambda)
+
+Parameters:
+  ProjectPrefix:
+    Type: String
+    Default: genai-incident-analyzer
+  Env:
+    Type: String
+    Default: dev
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 15
+    MemorySize: 256
+    Tracing: Active
+
+Resources:
+
+  ## S3 data bucket (private)
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectPrefix}-${Env}-data-${AWS::AccountId}"
+      VersioningConfiguration: { Status: Enabled }
+
+  ## S3 site bucket (public static website hosting)
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectPrefix}-${Env}-site-${AWS::AccountId}"
+      WebsiteConfiguration:
+        IndexDocument: index.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+  ## Public read policy for the site bucket (objects only)
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PublicReadForWebsite
+            Effect: Allow
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: !Sub "${SiteBucket.Arn}/*"
+
+  ## HTTP API (for /analyze and /health)
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: ["*"]
+        AllowHeaders: ["*"]
+        AllowMethods: ["GET","POST","OPTIONS"]
+
+  ## Stub Lambda for /analyze (we'll replace logic later)
+  OrchestratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectPrefix}-${Env}-orchestrator"
+      Handler: app.handler
+      CodeUri: ../lambdas/orchestrator
+      Description: "GenAI Incident Analyzer - orchestrator (stub)"
+      Policies:
+        - AWSLambdaBasicExecutionRole
+      Environment:
+        Variables:
+          DATA_BUCKET: !Ref DataBucket
+      Events:
+        AnalyzeApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /analyze
+            Method: POST
+
+  ## Simple /health route using the same function (optional)
+  HealthApiRoute:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectPrefix}-${Env}-health"
+      Handler: app.handler
+      CodeUri: ../lambdas/orchestrator
+      Description: "Health check handler (reuses stub)"
+      Policies:
+        - AWSLambdaBasicExecutionRole
+      Events:
+        HealthApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /health
+            Method: GET
+
+Outputs:
+  ApiBaseUrl:
+    Description: "HTTP API Base URL"
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  AnalyzeEndpoint:
+    Description: "POST /analyze endpoint"
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/analyze"
+  HealthEndpoint:
+    Description: "GET /health endpoint"
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com/health"
+  SiteBucketName:
+    Description: "Public website bucket (S3 static hosting)"
+    Value: !Ref SiteBucket
+  SiteWebsiteURL:
+    Description: "S3 static website URL"
+    Value: !Sub "http://${SiteBucket}.s3-website-${AWS::Region}.amazonaws.com"
+  DataBucketName:
+    Description: "Private data bucket"
+    Value: !Ref DataBucket
